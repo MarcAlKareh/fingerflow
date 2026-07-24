@@ -1,1 +1,0 @@
-FingerFlow is a tool designed for pianists without teachers to be able to generate fingerings for passages that they are unable to think of good fingerings for. It is the only tool to generate custom fingerings depending on a users specific hand biology.
