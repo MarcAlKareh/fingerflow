@@ -7,11 +7,13 @@ import {
   ArrowRight,
   ChevronDown,
   FileImage,
+  LoaderCircle,
   Sparkles,
   Upload,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { preprocessScore, saveJob } from "@/lib/api";
 import { easeOutExpo } from "@/components/landing/motion";
 
 const HAND_SPANS = [
@@ -53,6 +55,7 @@ export function UploadForm() {
   const [goal, setGoal] = useState("expression");
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -100,13 +103,33 @@ export function UploadForm() {
     [assignFile]
   );
 
-  const onGenerate = (event: React.FormEvent) => {
+  const onGenerate = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!file) {
-      setError("Add a sheet music image to continue.");
+    if (!file || submitting) {
+      if (!file) setError("Add a sheet music image to continue.");
       return;
     }
-    router.push("/processing");
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      const job = await preprocessScore({
+        file,
+        pieceName,
+        handSpan,
+        goal,
+      });
+      saveJob(job);
+      router.push(`/processing?job=${job.job_id}`);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not preprocess your score. Is the backend running?"
+      );
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -186,7 +209,8 @@ export function UploadForm() {
               <button
                 type="button"
                 onClick={() => inputRef.current?.click()}
-                className="shrink-0 text-sm text-zinc-400 transition hover:text-white"
+                disabled={submitting}
+                className="shrink-0 text-sm text-zinc-400 transition hover:text-white disabled:opacity-50"
               >
                 Replace
               </button>
@@ -246,7 +270,8 @@ export function UploadForm() {
             value={pieceName}
             onChange={(e) => setPieceName(e.target.value)}
             placeholder="e.g. Chopin Nocturne Op. 9 No. 2"
-            className="h-11 w-full rounded-xl border border-white/10 bg-white/[0.03] px-3.5 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-brand/40 focus:bg-white/[0.04] focus:ring-2 focus:ring-brand/15"
+            disabled={submitting}
+            className="h-11 w-full rounded-xl border border-white/10 bg-white/[0.03] px-3.5 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-brand/40 focus:bg-white/[0.04] focus:ring-2 focus:ring-brand/15 disabled:opacity-60"
           />
         </div>
 
@@ -263,7 +288,8 @@ export function UploadForm() {
                 id={handSpanId}
                 value={handSpan}
                 onChange={(e) => setHandSpan(e.target.value)}
-                className="h-11 w-full appearance-none rounded-xl border border-white/10 bg-white/[0.03] px-3.5 pr-10 text-sm text-white outline-none transition focus:border-brand/40 focus:bg-white/[0.04] focus:ring-2 focus:ring-brand/15"
+                disabled={submitting}
+                className="h-11 w-full appearance-none rounded-xl border border-white/10 bg-white/[0.03] px-3.5 pr-10 text-sm text-white outline-none transition focus:border-brand/40 focus:bg-white/[0.04] focus:ring-2 focus:ring-brand/15 disabled:opacity-60"
               >
                 {HAND_SPANS.map((option) => (
                   <option
@@ -291,7 +317,8 @@ export function UploadForm() {
                 id={goalId}
                 value={goal}
                 onChange={(e) => setGoal(e.target.value)}
-                className="h-11 w-full appearance-none rounded-xl border border-white/10 bg-white/[0.03] px-3.5 pr-10 text-sm text-white outline-none transition focus:border-brand/40 focus:bg-white/[0.04] focus:ring-2 focus:ring-brand/15"
+                disabled={submitting}
+                className="h-11 w-full appearance-none rounded-xl border border-white/10 bg-white/[0.03] px-3.5 pr-10 text-sm text-white outline-none transition focus:border-brand/40 focus:bg-white/[0.04] focus:ring-2 focus:ring-brand/15 disabled:opacity-60"
               >
                 {OPTIMIZATION_GOALS.map((option) => (
                   <option
@@ -311,20 +338,29 @@ export function UploadForm() {
 
       <motion.button
         type="submit"
-        whileHover={{ y: -2 }}
-        whileTap={{ y: 0 }}
+        whileHover={file && !submitting ? { y: -2 } : undefined}
+        whileTap={file && !submitting ? { y: 0 } : undefined}
         transition={{ duration: 0.2, ease: easeOutExpo }}
-        disabled={!file}
+        disabled={!file || submitting}
         className={cn(
           "mt-9 inline-flex h-12 w-full items-center justify-center gap-2 rounded-full text-sm font-medium transition",
-          file
+          file && !submitting
             ? "bg-white text-zinc-950 hover:bg-zinc-200"
             : "cursor-not-allowed bg-white/10 text-zinc-500"
         )}
       >
-        <Sparkles className="size-4" />
-        Generate Fingering
-        <ArrowRight className="size-4" />
+        {submitting ? (
+          <>
+            <LoaderCircle className="size-4 animate-spin" />
+            Preparing score…
+          </>
+        ) : (
+          <>
+            <Sparkles className="size-4" />
+            Generate Fingering
+            <ArrowRight className="size-4" />
+          </>
+        )}
       </motion.button>
     </motion.form>
   );

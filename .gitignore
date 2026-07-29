@@ -49,10 +49,11 @@ Thumbs.db
 *.swp
 *.swo
 
-# Python / backend (future)
+# Python / backend
 __pycache__/
 .venv/
 venv/
 *.pyc
 .pytest_cache/
 .mypy_cache/
+backend/uploads/
