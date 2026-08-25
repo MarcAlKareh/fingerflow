@@ -5,6 +5,11 @@ import sys
 import uuid
 from pathlib import Path
 
+from omr.audiveris import recognize_score
+from omr.parser import parse_musicxml
+from engine.viterbi import run_2nd_order_viterbi
+import json
+
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -86,6 +91,46 @@ async def preprocess(
     original_path.write_bytes(data)
     processed_path.write_bytes(processed_bytes)
 
+# --- AI PIPELINE INTEGRATION ---
+    notes_url = None
+    audiveris_dir = job_dir / "audiveris"
+    
+    try:
+        # 1. Run Audiveris
+        omr_result = recognize_score(processed_path, audiveris_dir)
+        
+        # 2. Parse MusicXML
+        music_data = parse_musicxml(omr_result.musicxml_path)
+        
+        # 3. Optimize Right Hand
+        if music_data.get("right_hand"):
+            try:
+                rh_fingers = run_2nd_order_viterbi(music_data["right_hand"], hand="right")
+                for idx, note in enumerate(music_data["right_hand"]):
+                    note["finger"] = rh_fingers[idx] if idx < len(rh_fingers) else None
+            except Exception as e:
+                print(f"Right hand optimization failed: {e}")
+                for note in music_data["right_hand"]: note["finger"] = None
+
+        # 4. Optimize Left Hand
+        if music_data.get("left_hand"):
+            try:
+                lh_fingers = run_2nd_order_viterbi(music_data["left_hand"], hand="left")
+                for idx, note in enumerate(music_data["left_hand"]):
+                    note["finger"] = lh_fingers[idx] if idx < len(lh_fingers) else None
+            except Exception as e:
+                print(f"Left hand optimization failed: {e}")
+                for note in music_data["left_hand"]: note["finger"] = None
+        
+        # 5. Save and link JSON
+        notes_path = job_dir / "notes.json"
+        notes_path.write_text(json.dumps(music_data, indent=2), encoding="utf-8")
+        notes_url = f"/api/uploads/{job_id}/notes.json"
+        
+    except Exception as exc:
+        print(f"OMR or Parsing failed for job {job_id}: {exc}")
+    # -----------------------------------
+
     meta = {
         "job_id": job_id,
         "original_filename": file.filename,
@@ -95,23 +140,8 @@ async def preprocess(
         "deskew_angle_deg": round(deskew_angle, 4),
         "original_url": f"/api/uploads/{job_id}/original{original_suffix}",
         "processed_url": f"/api/uploads/{job_id}/processed.png",
+        "notes_url": notes_url,
     }
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     return meta
-
-
-@app.get("/api/jobs/{job_id}")
-def get_job(job_id: str) -> dict:
-    meta_path = UPLOADS / job_id / "meta.json"
-    if not meta_path.exists():
-        raise HTTPException(status_code=404, detail="Job not found.")
-    return json.loads(meta_path.read_text(encoding="utf-8"))
-
-
-@app.get("/api/jobs/{job_id}/processed")
-def get_processed(job_id: str) -> FileResponse:
-    path = UPLOADS / job_id / "processed.png"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Processed image not found.")
-    return FileResponse(path, media_type="image/png")
