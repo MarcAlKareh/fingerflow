@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Check,
@@ -60,6 +60,8 @@ function getStageState(index: number, activeIndex: number): StageState {
 
 export function ProcessingStatus() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const jobId = searchParams.get("job_id");
   const [activeIndex, setActiveIndex] = useState(0);
 
   useEffect(() => {
@@ -68,14 +70,18 @@ export function ProcessingStatus() {
     );
 
     const navigateTimer = window.setTimeout(() => {
-      router.push("/results");
+      if (jobId) {
+        router.push(`/results/${jobId}`);
+      } else {
+        router.push("/results"); // Fallback just in case
+      }
     }, TOTAL_MS);
 
     return () => {
       timers.forEach((id) => window.clearTimeout(id));
       window.clearTimeout(navigateTimer);
     };
-  }, [router]);
+  }, [router, jobId]);
 
   const progress = ((activeIndex + 1) / STAGES.length) * 100;
   const ActiveIcon = STAGES[activeIndex]?.icon ?? Upload;
