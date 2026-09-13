@@ -69,16 +69,36 @@ python -m pytest
 
 ### Learning weights from human fingerings
 
-Download the PIG dataset (Nakamura, Saito and Yoshii; link in `engine/training/pig.py`), then:
+Download the PIG dataset (Nakamura, Saito and Yoshii; link in `engine/training/pig.py`), then run the benchmark, which trains, evaluates against the published metrics and runs the timing ablation in one command:
 
 ```bash
 cd backend
-python -m engine.training.train --pig-dir path/to/PIG/FingeringFiles \
-    --out weights_learned.json --epochs 8 --cache .feature_cache --workers 4
-python -m engine.training.evaluate --pig-dir path/to/PIG/FingeringFiles --weights weights_learned.json
+python -m engine.training.benchmark --pig-dir path/to/PIG/FingeringFiles \
+    --cache .feature_cache --workers 4 --save-weights weights_learned.json
 ```
 
 The API loads `backend/weights_learned.json` automatically if it exists (or the file named by `FINGERFLOW_WEIGHTS`); otherwise it uses the hand-tuned defaults in `engine/weights.py`.
+
+Human pianists agree with each other on only 71.4% of notes, so that is the ceiling rather than 100%. The closest published relative of this engine scores 63.78%.
+
+### Annotating your own fingerings
+
+Annotation effort is worth spending only where it carries information, so `select` flags the passages where the model is nearly indifferent between two fingerings, or where several annotators agree and the model does not:
+
+```bash
+python -m engine.training.select uncertain my_piece.musicxml --out review.musicxml
+python -m engine.training.select disagree --pig-dir path/to/PIG/FingeringFiles --out review.musicxml
+```
+
+Open `review.musicxml` in MuseScore, where each flagged passage carries the model's proposed fingering. Play them, correct what is wrong, export MusicXML, then convert back:
+
+```bash
+python -m engine.training.musescore corrected.musicxml --out-dir data/mine --annotator kh
+```
+
+The numbers must be MuseScore fingering marks rather than free text, otherwise MusicXML does not carry them and the converter reports zero annotations.
+
+`backend/docs/data-plan.md` sets out what data we are collecting, why, and what we are trying to prove.
 
 ## Sheet music preprocessing CLI
 

@@ -126,6 +126,35 @@ def _measure_number(element: m21.base.Music21Object) -> Optional[int]:
     return int(measure.number) if measure.number is not None else None
 
 
+def _fingerings(element: m21.note.NotRest) -> List[Optional[int]]:
+    """Finger numbers written on a note or chord, in ascending pitch order.
+
+    MusicXML carries one ``<fingering>`` per note, including inside a chord;
+    music21 collects a chord's fingerings onto the chord object in the order
+    its notes appear, which publishers and MuseScore write ascending. Where
+    the count does not match the number of pitches the fingerings cannot be
+    matched to pitches reliably, so they are all dropped: a partially
+    annotated passage is fine for training, a wrongly aligned one is not.
+    """
+    marks: List[Optional[int]] = []
+    for art in element.articulations:
+        if not isinstance(art, m21.articulations.Fingering):
+            continue
+        value = art.fingerNumber
+        try:
+            number = int(str(value).strip().split("-")[0].split("_")[0])
+        except (TypeError, ValueError):
+            number = None
+        marks.append(number if number is not None and 1 <= number <= 5 else None)
+
+    n_pitches = len(element.pitches)
+    if not marks:
+        return [None] * n_pitches
+    if len(marks) != n_pitches:
+        return [None] * n_pitches
+    return marks
+
+
 def extract_hand_data(
     part: m21.stream.Stream,
     tempo: TempoMap,
@@ -157,10 +186,11 @@ def extract_hand_data(
         end_sec = tempo.seconds(offset_ql + duration_ql) if duration_ql > 0 else start_sec
         measure = _measure_number(element)
 
-        if isinstance(element, m21.chord.Chord):
-            pitches = sorted(p.midi for p in element.pitches)
-        elif isinstance(element, m21.note.Note):
-            pitches = [element.pitch.midi]
+        if isinstance(element, (m21.chord.Chord, m21.note.Note)):
+            order = sorted(range(len(element.pitches)), key=lambda i: element.pitches[i].midi)
+            pitches = [element.pitches[i].midi for i in order]
+            marks = _fingerings(element)
+            fingers = [marks[i] if i < len(marks) else None for i in order]
         else:
             continue
 
@@ -171,10 +201,10 @@ def extract_hand_data(
             "grace": is_grace,
         }
         if is_grace:
-            for midi in pitches:
+            for midi, finger in zip(pitches, fingers):
                 pending_grace.append({
                     "note_id": note_id, "pitch": int(midi), "start_time_sec": start_sec,
-                    "duration_sec": GRACE_NOTE_SEC, **base,
+                    "duration_sec": GRACE_NOTE_SEC, "finger": finger, **base,
                 })
                 note_id += 1
             continue
@@ -187,10 +217,10 @@ def extract_hand_data(
                 events.append(grace)
             pending_grace = []
 
-        for midi in pitches:
+        for midi, finger in zip(pitches, fingers):
             events.append({
                 "note_id": note_id, "pitch": int(midi), "start_time_sec": start_sec,
-                "duration_sec": max(end_sec - start_sec, 0.0), **base,
+                "duration_sec": max(end_sec - start_sec, 0.0), "finger": finger, **base,
             })
             note_id += 1
 

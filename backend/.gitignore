@@ -5,3 +5,16 @@ __pycache__/
 venv/
 .pytest_cache/
 .feature_cache/
+
+# PIG and ThumbSet are licensed for nonprofit academic use and their download
+# page says explicitly: do NOT transfer this dataset to others. Committing
+# them to a public repository is transferring them, so they never go in git.
+PianoFingeringDataset*/
+ThumbSet*/
+FingeringFiles/
+*_fingering.txt
+!tests/fixtures/pig/*_fingering.txt
+
+# Our own annotations and anything derived from the datasets.
+data/
+weights_learned.json
