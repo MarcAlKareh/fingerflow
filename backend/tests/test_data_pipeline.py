@@ -381,3 +381,145 @@ def test_annotator_coverage_and_published_split():
     train, test = split_by_annotator_count(sequences, min_annotators=2)
     assert {s.piece for s in test} == {"crowd", "duo"}
     assert {s.piece for s in train} == {"solo"}
+
+
+# ---------------------------------------------------------------------------
+# Cross-validation
+# ---------------------------------------------------------------------------
+
+def _piece_sequences(piece, n_annotators, hand="right"):
+    return [
+        PigSequence(piece=piece, annotator=str(a), hand=hand,
+                    path=Path(f"{piece}-{a}_fingering.txt"),
+                    hand_data=line([60, 62, 64, 65]), fingers=[1, 2, 3, 1])
+        for a in range(1, n_annotators + 1)
+    ]
+
+
+def test_folds_cover_every_piece_exactly_once():
+    from engine.training.crossval import stratified_folds
+
+    sequences = []
+    for i in range(20):
+        sequences += _piece_sequences(f"p{i:02d}", 1 if i < 12 else (2 if i < 16 else 4))
+    folds = stratified_folds(sequences, folds=5)
+    assert len(folds) == 5
+    everything = [piece for fold in folds for piece in fold]
+    assert len(everything) == len(set(everything)) == 20
+    for a in range(5):
+        for b in range(a + 1, 5):
+            assert not (folds[a] & folds[b]), "folds must not overlap"
+
+
+def test_folds_are_stratified_by_annotator_count():
+    from engine.training.crossval import bucket_of, stratified_folds
+
+    sequences = []
+    for i in range(20):
+        sequences += _piece_sequences(f"p{i:02d}", 1 if i < 10 else 4)
+    counts = {f"p{i:02d}": (1 if i < 10 else 4) for i in range(20)}
+    folds = stratified_folds(sequences, folds=5)
+    # Each fold should hold two easy and two hard pieces, not four of one kind.
+    for fold in folds:
+        buckets = [bucket_of(counts[p]) for p in fold]
+        assert buckets.count("1 annotator") == 2
+        assert buckets.count("4+ annotators") == 2
+
+
+def test_aggregate_is_note_weighted_and_split_by_bucket():
+    from engine.training.crossval import PieceResult, aggregate
+
+    results = [
+        PieceResult("a", annotators=1, notes=100, general=0.90, highest=0.90, soft=0.90),
+        PieceResult("b", annotators=6, notes=300, general=0.70, highest=0.80, soft=0.95),
+    ]
+    summary = aggregate(results)
+    assert summary["1 annotator"]["general"] == pytest.approx(0.90)
+    assert summary["4+ annotators"]["general"] == pytest.approx(0.70)
+    # 100 notes at 0.90 and 300 at 0.70 average to 0.75, not 0.80.
+    assert summary["all"]["general"] == pytest.approx(0.75)
+    assert summary["all"]["notes"] == 400 and summary["all"]["pieces"] == 2
+
+
+def test_score_pieces_reports_confusions():
+    from engine.training.crossval import score_pieces
+    from engine.training.train import prepare_all
+
+    # A fingering no pianist would use, so the model is certain to differ.
+    odd = PigSequence(piece="odd", annotator="1", hand="right", path=Path("odd-1_fingering.txt"),
+                      hand_data=line([60, 62, 64, 65, 67, 69, 71, 72]),
+                      fingers=[5, 4, 3, 2, 1, 2, 3, 4])
+    prepared = prepare_all([odd], 21.0, None)
+    results = score_pieces(prepared, Weights.default())
+    assert len(results) == 1
+    result = results[0]
+    assert result.piece == "odd" and result.annotators == 1 and result.notes == 8
+    assert 0.0 <= result.general <= 1.0
+    assert sum(result.confusions.values()) == round((1 - result.general) * result.notes)
+    assert all(1 <= g <= 5 and 1 <= m <= 5 and g != m for g, m in result.confusions)
+
+
+# ---------------------------------------------------------------------------
+# Weight sweep
+# ---------------------------------------------------------------------------
+
+def _fifths_fingered_12345():
+    """Passages a pianist fingers 1-2-3-4-5, so avoiding 4 or 5 costs match rate."""
+    return [
+        PigSequence(piece=f"p{i}", annotator="1", hand="right",
+                    path=Path(f"p{i}-1_fingering.txt"),
+                    hand_data=line([s, s + 2, s + 4, s + 5, s + 7]),
+                    fingers=[1, 2, 3, 4, 5])
+        for i, s in enumerate([60, 62, 64, 65, 67, 69, 71, 72])
+    ]
+
+
+def test_sweep_finds_a_deliberately_broken_weight():
+    from engine.training.sweep import scaled, sweep
+    from engine.training.train import prepare_all
+    from engine.weights import DEFAULT_WEIGHTS
+
+    prepared = prepare_all(_fifths_fingered_12345(), 21.0, None)
+    broken = dict(DEFAULT_WEIGHTS)
+    broken["use_f4"] = 5.0                      # absurdly discouraging finger 4
+    weights = Weights.from_dict(broken)
+
+    results, baseline = sweep(prepared, weights, ["use_f4", "three_four"], [0.0, 1.0, 2.0])
+
+    by_multiplier = dict(results["use_f4"])
+    assert by_multiplier[1.0] == pytest.approx(baseline)
+    assert by_multiplier[0.0] > baseline, "lowering the broken weight must help"
+    assert by_multiplier[2.0] < baseline, "raising it further must hurt"
+
+    # An unrelated weight should not look like the culprit.
+    unrelated = dict(results["three_four"])
+    assert unrelated[0.0] == pytest.approx(baseline)
+
+
+def test_finger_usage_shows_the_shortfall():
+    from engine.training.sweep import finger_usage
+    from engine.training.train import prepare_all
+    from engine.weights import DEFAULT_WEIGHTS
+
+    prepared = prepare_all(_fifths_fingered_12345(), 21.0, None)
+    broken = dict(DEFAULT_WEIGHTS)
+    broken["use_f4"] = 5.0
+    model_counts, human_counts = finger_usage(prepared, Weights.from_dict(broken))
+
+    assert sum(model_counts.values()) == sum(human_counts.values()) == 40
+    assert human_counts[4] == 8
+    assert model_counts[4] < human_counts[4], "the model should visibly avoid finger 4"
+
+
+def test_scaled_changes_only_the_named_weight():
+    from engine.training.sweep import scaled
+
+    base = Weights.default()
+    changed = scaled(base, "use_f4", 2.0)
+    before, after = base.to_dict(), changed.to_dict()
+    assert after["use_f4"] == pytest.approx(before["use_f4"] * 2)
+    for name, value in before.items():
+        if name != "use_f4":
+            assert after[name] == pytest.approx(value)
+    with pytest.raises(KeyError):
+        scaled(base, "not_a_feature", 2.0)

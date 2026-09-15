@@ -58,3 +58,13 @@ venv/
 .mypy_cache/
 backend/uploads/
 tmp/
+
+
+
+PianoFingeringDataset*/
+ThumbSet*/
+FingeringFiles/
+*_fingering.txt
+!tests/fixtures/pig/*_fingering.txt
+data/
+weights_learned.json

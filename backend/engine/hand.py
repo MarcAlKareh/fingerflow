@@ -127,12 +127,31 @@ class HandProfile:
         return self.keyboard.semitone_mm
 
     def bounds_mm(self, finger_a: int, finger_b: int) -> SpanBounds:
+        """Span bounds for a finger pair, in millimetres, scaled to this hand.
+
+        Reach and squeeze do not scale alike. A larger hand spreads further,
+        so the outward bounds grow with span, and a longer thumb passes
+        further under, so the crossing bounds (negative values) grow too.
+
+        But a larger hand does not lose the ability to put two fingers on
+        neighbouring keys. How close a pair can sit is set by finger breadth
+        and the width of the keys, not by how far the hand spreads. Scaling
+        the positive minimum bounds up with span produced the absurd verdict
+        that a 23 cm hand cannot play a chromatic semitone with fingers 2 and
+        3, something every pianist does constantly. So those bounds shrink
+        for a small hand but never grow past their reference value.
+        """
         pair = (min(finger_a, finger_b), max(finger_a, finger_b))
         if pair[0] == pair[1]:
             raise ValueError("Span bounds are defined for two different fingers")
         st = PARNCUTT_SPANS[pair]
-        unit = self.semitone_mm * self.scale
-        return SpanBounds(*(value * unit for value in st))
+        reach = self.semitone_mm * self.scale
+        squeeze = self.semitone_mm * min(1.0, self.scale)
+        values = [
+            value * (squeeze if index < 3 and value > 0 else reach)
+            for index, value in enumerate(st)
+        ]
+        return SpanBounds(*values)
 
     def natural_span_mm(
         self, finger_a: int, midi_a: int, finger_b: int, midi_b: int

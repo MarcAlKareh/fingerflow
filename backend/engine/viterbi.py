@@ -126,6 +126,28 @@ def event_best_costs(tensors: FeatureTensors, weights: Weights) -> List[np.ndarr
     return best
 
 
+def path_cost(tensors: FeatureTensors, weights: Weights, path: Sequence[int]) -> float:
+    """Cost of one assignment path.
+
+    :func:`decode` returns the cost of the path it found, which is not the
+    same thing when the decode was constrained or loss-augmented: those add
+    penalties that are not part of the model. This recomputes the honest
+    cost from the path alone, so costs from different constrained decodes
+    are comparable with each other and with the unconstrained optimum.
+    """
+    if not path:
+        return 0.0
+    cS, cT, cQ = _costs(tensors, weights, None)
+    total = float(cS[0][path[0]])
+    for k in range(1, len(path)):
+        total += float(cS[k][path[k]])
+        if cT[k] is not None:
+            total += float(cT[k][path[k - 1], path[k]])
+        if k >= 2 and cQ[k] is not None:
+            total += float(cQ[k][path[k - 2], path[k - 1], path[k]])
+    return total
+
+
 def event_margins(tensors: FeatureTensors, weights: Weights, path: Sequence[int]) -> np.ndarray:
     """Cost penalty for changing the fingering at each event, one value per event.
 
