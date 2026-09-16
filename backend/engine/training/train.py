@@ -172,9 +172,26 @@ def _complete_gold(prepared: PreparedSequence, predicted: Sequence[int]) -> List
     return [g if g is not None else int(p) for g, p in zip(prepared.gold_path, predicted)]
 
 
+def predicted_fingers(prepared: PreparedSequence, path: Sequence[int]) -> Dict[int, int]:
+    """{note_id: finger} for the notes struck along a decoded path."""
+    out: Dict[int, int] = {}
+    for k, ev in enumerate(prepared.tensors.events):
+        assign = ev.assignments[path[k]]
+        for note, finger in new_note_fingers(ev, assign):
+            out[note.note_id] = int(finger)
+    return out
+
+
 def evaluate(prepared_list: Sequence[PreparedSequence], weights: Weights) -> Dict[str, float]:
-    """General, highest and soft match rates in the sense of Nakamura et al. (2020)."""
-    per_seq_matches: Dict[Tuple[str, str], List[Tuple[int, int, List[int]]]] = {}
+    """General, highest and soft match rates in the sense of Nakamura et al. (2020).
+
+    General: agreement with every annotator file, pooled over all notes.
+    Highest: per piece and hand, the best-agreeing annotator only.
+    Soft: a note counts as matched if it agrees with *any* annotator of that
+    piece, which is the metric that respects there being several correct
+    fingerings. Soft needs at least two annotators to differ from general.
+    """
+    grouped: Dict[Tuple[str, str], List[Tuple[PreparedSequence, Dict[int, int], int, int]]] = {}
     matched_total = 0
     notes_total = 0
     for prep in prepared_list:
@@ -182,20 +199,41 @@ def evaluate(prepared_list: Sequence[PreparedSequence], weights: Weights) -> Dic
         m, t = note_matches(prep, result.path)
         matched_total += m
         notes_total += t
-        per_seq_matches.setdefault((prep.piece, prep.hand), []).append((m, t, result.path))
+        grouped.setdefault((prep.piece, prep.hand), []).append(
+            (prep, predicted_fingers(prep, result.path), m, t)
+        )
 
     highest_num = 0.0
     highest_den = 0
-    for (piece, hand), items in per_seq_matches.items():
-        best_rate = max((m / t) if t else 0.0 for m, t, _ in items)
-        n = max(t for _, t, _ in items)
+    soft_matched = 0
+    soft_total = 0
+    for items in grouped.values():
+        best_rate = max((m / t) if t else 0.0 for _, _, m, t in items)
+        n = max(t for _, _, _, t in items)
         highest_num += best_rate * n
         highest_den += n
+
+        # Union of the fingers any annotator of this piece chose, by note id.
+        union: Dict[int, set] = {}
+        for prep, _, _, _ in items:
+            for note_id, finger in prep.gold_fingers.items():
+                union.setdefault(note_id, set()).add(finger)
+        prep, prediction, _, _ = items[0]
+        for note_id, finger in prediction.items():
+            options = union.get(note_id)
+            if not options:
+                continue
+            soft_total += 1
+            if finger in options:
+                soft_matched += 1
+
     return {
         "general_match_rate": matched_total / notes_total if notes_total else 0.0,
         "highest_match_rate": highest_num / highest_den if highest_den else 0.0,
+        "soft_match_rate": soft_matched / soft_total if soft_total else 0.0,
         "notes": notes_total,
         "sequences": len(prepared_list),
+        "pieces": len(grouped),
     }
 
 

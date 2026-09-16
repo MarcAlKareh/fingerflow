@@ -1,6 +1,6 @@
 """Loader for the PIG piano fingering dataset (Nakamura, Saito, Yoshii).
 
-Dataset page: https://beam.kisarazu.ac.jp/~saito/research/PianoFingeringDataset/
+Dataset page: https://beam.kisarazu.ac.jp/research/PianoFingeringDataset/
 Each ``FingeringFiles/<piece>-<annotator>_fingering.txt`` is a tab
 separated table with one note per line:
 
@@ -25,7 +25,11 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from ..keyboard import name_to_midi
 
-FILENAME_RE = re.compile(r"^(?P<piece>\d+)-(?P<annotator>\d+)_fingering\.txt$", re.IGNORECASE)
+# PIG names its files "<piece>-<annotator>_fingering.txt" with numeric ids.
+# Our own annotations use readable names such as "chopin_op10_no1-kh", so the
+# last hyphen separates the piece from the annotator and a piece name may
+# itself contain hyphens.
+FILENAME_RE = re.compile(r"^(?P<piece>.+)-(?P<annotator>[^-]+)_fingering\.txt$", re.IGNORECASE)
 
 
 @dataclass
@@ -95,9 +99,24 @@ def parse_pig_file(path: Path) -> Tuple[List[Dict], List[Dict]]:
     return right, left
 
 
+def is_macos_junk(path: Path) -> bool:
+    """True for the AppleDouble debris a macOS-made zip carries.
+
+    The PIG release is zipped on macOS, so it contains a ``__MACOSX`` tree of
+    ``._name`` files shadowing every real file. They are binary resource
+    forks, not data, and they double the apparent file count.
+    """
+    return "__MACOSX" in path.parts or path.name.startswith("._")
+
+
+def find_fingering_files(directory: Path) -> List[Path]:
+    """Fingering files under a directory, ignoring macOS zip debris."""
+    return sorted(p for p in Path(directory).rglob("*_fingering.txt") if not is_macos_junk(p))
+
+
 def load_pig_dir(directory: Path, hands: Iterable[str] = ("right", "left")) -> List[PigSequence]:
     directory = Path(directory)
-    files = sorted(p for p in directory.rglob("*_fingering.txt"))
+    files = find_fingering_files(directory)
     sequences: List[PigSequence] = []
     for path in files:
         match = FILENAME_RE.match(path.name)

@@ -157,7 +157,7 @@ Jacobs, J. P. (2001). Refinements to the ergonomic model for keyboard fingering 
 
 Balliauw, M., Herremans, D., Palhazi Cuervo, D. and Sörensen, K. (2017). A variable neighbourhood search algorithm to generate piano fingerings for polyphonic sheet music. *International Transactions in Operational Research* 24(3), 509-535.
 
-Nakamura, E., Saito, Y. and Yoshii, K. (2020). Statistical learning and estimation of piano fingering. *Information Sciences* 517, 68-85. Dataset: https://beam.kisarazu.ac.jp/~saito/research/PianoFingeringDataset/
+Nakamura, E., Saito, Y. and Yoshii, K. (2020). Statistical learning and estimation of piano fingering. *Information Sciences* 517, 68-85. Dataset: https://beam.kisarazu.ac.jp/research/PianoFingeringDataset/
 
 Fitts, P. M. (1954). The information capacity of the human motor system in controlling the amplitude of movement. *Journal of Experimental Psychology* 47(6), 381-391. Shannon form after MacKenzie (1992).
 

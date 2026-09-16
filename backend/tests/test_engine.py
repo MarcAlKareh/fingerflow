@@ -289,3 +289,38 @@ def test_viterbi_matches_brute_force():
             fs, ft, fq = tensors.path_features(path)
             best = min(best, float(fs @ w.state + ft @ w.trans + fq @ w.second))
         assert math.isclose(best, result.cost, rel_tol=1e-9, abs_tol=1e-9)
+
+
+def test_large_hands_can_still_play_close_intervals():
+    """Reach scales with hand size; squeeze does not.
+
+    Scaling the minimum bounds up with span made a 23 cm hand unable to play a
+    chromatic semitone with fingers 2 and 3, which every pianist does.
+    """
+    semitone = STANDARD_KEYBOARD.semitone_mm
+    small, reference, large = (hand_profile("right", cm) for cm in (17.0, 21.0, 25.0))
+
+    # Squeeze: never worse than the reference hand, looser for a small one.
+    assert small.bounds_mm(2, 3).min_prac < reference.bounds_mm(2, 3).min_prac
+    assert large.bounds_mm(2, 3).min_prac == pytest.approx(reference.bounds_mm(2, 3).min_prac)
+    for profile in (small, reference, large):
+        assert profile.bounds_mm(2, 3).min_prac <= semitone + 1e-9, (
+            "adjacent fingers must always manage neighbouring keys"
+        )
+
+    # Reach: still grows with the hand.
+    assert small.bounds_mm(1, 5).max_prac < reference.bounds_mm(1, 5).max_prac
+    assert reference.bounds_mm(1, 5).max_prac < large.bounds_mm(1, 5).max_prac
+
+    # Crossings are reach, not squeeze, so they still scale.
+    assert abs(small.bounds_mm(1, 3).min_prac) < abs(large.bounds_mm(1, 3).min_prac)
+
+
+def test_chromatic_semitone_costs_nothing_extra_for_a_large_hand():
+    from engine.fingering import cost_breakdown
+
+    data = line([68, 67], ioi=0.3)          # G#5 then G5, played 3 then 2
+    for span in (19.0, 21.0, 23.0, 25.0):
+        breakdown = cost_breakdown(data, "right", [3, 2], hand_span_cm=span)
+        assert breakdown.get("prac_in", 0.0) == 0.0, f"{span} cm hand called a semitone impossible"
+        assert breakdown.get("comf_in", 0.0) == 0.0, f"{span} cm hand called a semitone cramped"

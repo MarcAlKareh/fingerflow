@@ -5,3 +5,21 @@ __pycache__/
 venv/
 .pytest_cache/
 .feature_cache/
+
+# PIG and ThumbSet are licensed for nonprofit academic use and their download
+# page says explicitly: do NOT transfer this dataset to others. Committing
+# them to a public repository is transferring them, so they never go in git.
+PianoFingeringDataset*/
+ThumbSet*/
+FingeringFiles/
+*_fingering.txt
+!tests/fixtures/pig/*_fingering.txt
+
+# Our own fingering annotations. These are a held-out test set, and keeping
+# them out of the repo makes it harder to train on them by accident.
+data/
+
+# weights_learned.json IS committed on purpose. It is 99 numbers that our own
+# model learned, not any part of PIG: no fingering, note or piece can be
+# recovered from it, so publishing it is not transferring the dataset. The
+# backend loads it at startup, so the app needs it to serve the trained model.
