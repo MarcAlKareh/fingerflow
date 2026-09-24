@@ -27,6 +27,9 @@ from .viterbi import decode
 from .weights import Weights
 
 EXPLANATION_MIN_COST = 0.15
+# Large enough that the rule always wins where a legal alternative exists,
+# small enough that a passage with no thumb-free fingering still decodes.
+THUMB_ON_BLACK_BAN = 1.0e4
 EXPLANATION_MAX_ITEMS = 3
 
 
@@ -77,6 +80,28 @@ def _event_cost(tensors: FeatureTensors, weights: Weights, path: Sequence[int], 
     return total
 
 
+def _no_thumb_on_black(events: Sequence[Event], profile: HandProfile) -> List[Optional[np.ndarray]]:
+    """Per-event penalties banning the thumb from black keys.
+
+    A finite penalty, not infinity, so that a passage with no thumb-free
+    fingering still decodes: the rule bends rather than the decoder failing.
+    """
+    keyboard = profile.keyboard
+    out: List[Optional[np.ndarray]] = []
+    for ev in events:
+        black = {n.note_id for n in ev.new_notes if keyboard.is_black(n.midi)}
+        if not black:
+            out.append(None)
+            continue
+        penalty = np.zeros(len(ev.assignments))
+        for a, assign in enumerate(ev.assignments):
+            offenders = sum(1 for note, finger in new_note_fingers(ev, assign)
+                            if finger == 1 and note.note_id in black)
+            penalty[a] = -THUMB_ON_BLACK_BAN * offenders
+        out.append(penalty)  # subtracted from the state cost, so negative adds cost
+    return out
+
+
 def assign_fingering(
     hand_data: Sequence[Dict],
     hand: str,
@@ -86,8 +111,17 @@ def assign_fingering(
     keyboard: Optional[Keyboard] = None,
     profile: Optional[HandProfile] = None,
     explain: bool = True,
+    avoid_thumb_on_black: bool = False,
 ) -> FingeringResult:
-    """Compute the least-strain fingering for one hand."""
+    """Compute the least-strain fingering for one hand.
+
+    ``avoid_thumb_on_black`` imposes the teaching rule that the thumb stays
+    off the black keys. It restricts the decode rather than changing any
+    weight, so the model is untouched; it is simply asked for its best answer
+    inside a smaller set. The rule is silently dropped at any event where it
+    would leave no fingering at all, which is what happens when a passage
+    sits entirely on black keys.
+    """
     if hand not in ("right", "left"):
         raise ValueError("hand must be 'right' or 'left'")
     if not hand_data:
@@ -99,7 +133,8 @@ def assign_fingering(
     notes = notes_from_hand_data(hand_data)
     events = build_events(notes, prof)
     tensors = FeatureTensors(events, prof)
-    result = decode(tensors, w)
+    augment = _no_thumb_on_black(events, prof) if avoid_thumb_on_black else None
+    result = decode(tensors, w, augment=augment)
 
     fingers: Dict[int, Optional[int]] = {n.note_id: None for n in notes}
     explanations: Dict[int, List[str]] = {}

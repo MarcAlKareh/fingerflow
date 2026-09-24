@@ -31,7 +31,8 @@ WEIGHTS_PATH = Path(os.environ.get("FINGERFLOW_WEIGHTS", str(Path(__file__).reso
 LEARNED_WEIGHTS: Optional[Weights] = Weights.load(WEIGHTS_PATH) if WEIGHTS_PATH.is_file() else None
 
 DEFAULT_HAND_SPAN_CM = 20.0
-GOALS = {"expression", "speed"}
+GOALS = {"beginner", "expression", "speed"}
+DEFAULT_GOAL = "beginner"
 
 app = FastAPI(title="FingerFlow API", version="0.2.0")
 
@@ -108,7 +109,7 @@ async def preprocess(
     hand_span_left_cm: str = Form(""),
     hand_span_right_cm: str = Form(""),
     tempo_bpm: str = Form(""),
-    goal: str = Form("expression"),
+    goal: str = Form(DEFAULT_GOAL),
 ) -> dict:
     content_type = (file.content_type or "").lower()
     if content_type not in ACCEPTED_TYPES:
@@ -136,7 +137,7 @@ async def preprocess(
     shared_span = _parse_span(hand_span, DEFAULT_HAND_SPAN_CM)
     span_left = _parse_span(hand_span_left_cm, shared_span)
     span_right = _parse_span(hand_span_right_cm, shared_span)
-    goal_choice = goal.strip().lower() if goal.strip().lower() in GOALS else "expression"
+    goal_choice = goal.strip().lower() if goal.strip().lower() in GOALS else DEFAULT_GOAL
     tempo_override = _parse_tempo(tempo_bpm)
 
     job_id = uuid.uuid4().hex

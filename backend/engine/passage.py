@@ -128,24 +128,51 @@ class Passage:
         return result.path, path_cost(self.tensors, weights, result.path)
 
     def constrained(self, weights: Weights, fixed: Dict[int, int]) -> Optional[Tuple[List[int], float]]:
-        """Cheapest complete path in which event ``k`` uses finger ``fixed[k]``.
+        """Cheapest complete path in which event ``k`` uses finger ``fixed[k]``."""
+        return self.masked(weights, {k: (f,) for k, f in fixed.items()})
+
+    def masked(self, weights: Weights, allowed: Dict[int, Sequence[int]]) -> Optional[Tuple[List[int], float]]:
+        """Cheapest complete path using only ``allowed[k]`` at each listed event.
 
         Returns ``None`` when no such path exists, rather than a path that
-        quietly violates the constraint.
+        quietly violates the restriction. The ban is a large finite penalty
+        rather than infinity, so a banned assignment stays distinguishable
+        from a physically infeasible one when the path is read back, and the
+        cost returned is always the honest unpenalised cost of the path.
         """
         augment: List[Optional[np.ndarray]] = [None] * len(self.events)
-        for k, finger in fixed.items():
-            allowed = self._options[k].get(finger, [])
-            if not allowed:
+        permitted: Dict[int, set] = {}
+        for k, fingers in allowed.items():
+            indices = [i for f in fingers for i in self._options[k].get(f, [])]
+            if not indices:
                 return None
+            permitted[k] = set(indices)
             penalty = np.full(len(self.events[k].assignments), -BAN)
-            penalty[allowed] = 0.0
+            penalty[list(indices)] = 0.0
             augment[k] = penalty  # subtracted from the state cost, so -BAN adds BAN
         path = decode(self.tensors, weights, augment=augment).path
-        for k, finger in fixed.items():
-            if path[k] not in self._options[k].get(finger, []):
-                return None
+        if any(path[k] not in indices for k, indices in permitted.items()):
+            return None
         return path, path_cost(self.tensors, weights, path)
+
+    def black_key_events(self) -> List[int]:
+        """Events whose struck note is a black key (chords excluded)."""
+        keyboard = self.profile.keyboard
+        return [k for k, ev in enumerate(self.events)
+                if len(ev.new_notes) == 1 and keyboard.is_black(ev.new_notes[0].midi)]
+
+    def without_thumb_on_black(self, weights: Weights) -> Optional[Tuple[List[int], float]]:
+        """Best fingering that never puts the thumb on a black key.
+
+        A teaching rule rather than a law of physics. It holds for nearly all
+        scale and arpeggio work, which is why teachers state it flatly, and it
+        fails wherever a passage sits mostly on black keys and the thumb has
+        nowhere white to go. Imposed here as a decode-time restriction, so it
+        changes no feature and no weight: the model is unchanged, it is simply
+        being asked for the best fingering inside a smaller set.
+        """
+        allowed = {k: [f for f in self.options(k) if f != 1] for k in self.black_key_events()}
+        return self.masked(weights, {k: v for k, v in allowed.items() if v})
 
     def path_features(self, path: Sequence[int]):
         return self.tensors.path_features(list(path))

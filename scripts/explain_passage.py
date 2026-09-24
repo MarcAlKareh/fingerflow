@@ -52,7 +52,7 @@ def main(argv=None) -> int:
                         help="8 for quavers, 16 for semiquavers, 32 for demisemiquavers")
     parser.add_argument("--legato", action="store_true", default=True)
     parser.add_argument("--staccato", dest="legato", action="store_false")
-    parser.add_argument("--goal", default=None, choices=[None, "expression", "speed"])
+    parser.add_argument("--goal", default=None, choices=[None, "beginner", "expression", "speed"])
     parser.add_argument("--weights", type=Path, default=None)
     args = parser.parse_args(argv)
     args.bpm_given = any(a.startswith("--bpm") for a in (argv if argv is not None else sys.argv[1:]))

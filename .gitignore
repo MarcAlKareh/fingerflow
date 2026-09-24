@@ -68,3 +68,7 @@ FingeringFiles/
 !tests/fixtures/pig/*_fingering.txt
 data/
 weights_learned.json
+
+
+
+fingerflow/

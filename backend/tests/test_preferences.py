@@ -156,3 +156,54 @@ def test_comments_and_blank_lines_are_skipped(tmp_path: Path):
     with path.open("a", encoding="utf-8") as fh:
         fh.write("\n# a note to myself\n")
     assert len(load_preferences(path)) == 1
+
+
+def test_masking_is_the_optimum_within_the_mask():
+    import itertools
+    passage = spec("C#5 D5 C#5 B4").build()
+    weights = Weights.default()
+    allowed = {0: [2, 3], 2: [2, 3]}
+    got = passage.masked(weights, allowed)
+    assert got is not None
+    fingers = passage.fingers(got[0])
+    assert fingers[0] in allowed[0] and fingers[2] in allowed[2]
+    options = [allowed.get(k) or passage.options(k) for k in range(len(passage))]
+    want = min(passage.constrained(weights, dict(enumerate(c)))[1]
+               for c in itertools.product(*options))
+    assert got[1] == pytest.approx(want, abs=1e-6)
+
+
+def test_masking_an_impossible_set_returns_none():
+    passage = spec().build()
+    assert passage.masked(Weights.default(), {0: [9]}) is None
+
+
+def test_thumb_is_kept_off_the_black_keys():
+    from engine.fingering import assign_fingering
+    passage = spec("C#4 D#4 F4 C#4 F#4 F4").build()
+    weights = Weights.default()
+    keyboard = passage.profile.keyboard
+    black = set(passage.black_key_events())
+    assert black  # the fixture must actually contain black keys
+
+    free = passage.fingers(passage.best(weights)[0])
+    got = passage.without_thumb_on_black(weights)
+    assert got is not None
+    strict = passage.fingers(got[0])
+    assert all(strict[k] != 1 for k in black)
+    assert got[1] >= passage.best(weights)[1] - 1e-9
+
+    # The same rule through the public entry point.
+    result = assign_fingering(passage.data, "right", hand_span_cm=23.0,
+                              avoid_thumb_on_black=True)
+    for note in passage.data:
+        if keyboard.is_black(note["pitch"]):
+            assert result.fingers[note["note_id"]] != 1
+
+
+def test_the_thumb_rule_bends_when_a_passage_is_all_black_keys():
+    from engine.fingering import assign_fingering
+    data = [{"note_id": i, "pitch": p, "start_time_sec": i * 0.2, "duration_sec": 0.2}
+            for i, p in enumerate([61, 63, 66, 68, 70, 73, 75, 78])]  # all black
+    result = assign_fingering(data, "right", hand_span_cm=23.0, avoid_thumb_on_black=True)
+    assert all(f is not None for f in result.finger_list)

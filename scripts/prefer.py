@@ -61,7 +61,7 @@ def build_spec(args) -> PassageSpec:
 def cmd_record(args) -> int:
     spec = build_spec(args)
     passage = spec.build()
-    weights = load_weights(args.weights)
+    weights = load_weights(args.weights, args.goal)
     lo, hi = parse_segment(args.segment, len(passage))
     span = list(range(lo, hi + 1))
 
@@ -126,7 +126,7 @@ def cmd_fit(args) -> int:
     if not prefs:
         print(f"No preferences in {args.prefs}. Record some first.", file=sys.stderr)
         return 1
-    base = load_weights(args.base)
+    base = load_weights(args.base, args.goal)
     print(f"{len(prefs)} preferences, base weights {args.base or 'built-in defaults'}", file=sys.stderr)
     comparisons = resolve_all(prefs, base)
 
@@ -163,8 +163,8 @@ def cmd_check(args) -> int:
     if not prefs:
         print(f"No preferences in {args.prefs}.", file=sys.stderr)
         return 1
-    base = load_weights(args.base)
-    weights = load_weights(args.weights)
+    base = load_weights(args.base, args.goal)
+    weights = load_weights(args.weights, args.goal)
     comparisons = resolve_all(prefs, base)
     report(comparisons, base, weights, f"{args.weights or 'built-in defaults'}")
     return 0
@@ -206,6 +206,8 @@ def main(argv=None) -> int:
     rec.add_argument("--strength", type=float, default=1.0,
                      help="1.0 for an ordinary preference, higher if you feel strongly")
     rec.add_argument("--weights", type=Path, default=None, help="Weights the engine is currently using")
+    rec.add_argument("--goal", default=None, choices=[None, "beginner", "expression", "speed"],
+                     help="Preset the engine is currently using, so --over reflects what you were shown")
     rec.add_argument("--prefs", type=Path, default=Path("my_prefs.jsonl"))
     rec.set_defaults(func=cmd_record)
 
@@ -214,6 +216,7 @@ def main(argv=None) -> int:
     fit_p.add_argument("--base", type=Path, default=None, help="Population weights to start from")
     fit_p.add_argument("--out", type=Path, default=None)
     fit_p.add_argument("--show-weights", type=int, default=8)
+    fit_p.add_argument("--goal", default=None, choices=[None, "beginner", "expression", "speed"])
     add_fit_args(fit_p)
     fit_p.set_defaults(func=cmd_fit)
 
@@ -221,6 +224,7 @@ def main(argv=None) -> int:
     chk.add_argument("--prefs", type=Path, default=Path("my_prefs.jsonl"))
     chk.add_argument("--base", type=Path, default=None)
     chk.add_argument("--weights", type=Path, default=None)
+    chk.add_argument("--goal", default=None, choices=[None, "beginner", "expression", "speed"])
     chk.set_defaults(func=cmd_check)
 
     args = parser.parse_args(argv)

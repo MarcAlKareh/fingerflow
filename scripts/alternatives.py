@@ -58,11 +58,14 @@ def main(argv=None) -> int:
     parser.add_argument("--span-cm", type=float, default=21.0)
     parser.add_argument("--bpm", type=float, default=60.0)
     parser.add_argument("--note-value", type=int, default=8)
-    parser.add_argument("--goal", default=None, choices=[None, "expression", "speed"])
+    parser.add_argument("--goal", default=None, choices=[None, "beginner", "expression", "speed"])
     parser.add_argument("--weights", type=Path, default=None)
     parser.add_argument("--segment", default=None, help="Note range to re-finger, e.g. 9-13")
     parser.add_argument("--force", default=None, help="Fingering to price, e.g. 9:3,10:4,11:3")
     parser.add_argument("--top", type=int, default=8)
+    parser.add_argument("--no-thumb-on-black", action="store_true",
+                        help="Keep the thumb off the black keys (a teaching rule, "
+                             "dropped where it would leave no fingering)")
     args = parser.parse_args(argv)
     raw = argv if argv is not None else sys.argv[1:]
     bpm_given = any(a.startswith("--bpm") for a in raw)
@@ -81,10 +84,17 @@ def main(argv=None) -> int:
     weights = (Weights.load(args.weights).with_preset(args.goal) if args.weights
                else Weights.default(args.goal))
 
-    best_path, base_cost = passage.best(weights)
+    if args.no_thumb_on_black:
+        got = passage.without_thumb_on_black(weights)
+        if got is None:
+            raise SystemExit("No fingering keeps the thumb off the black keys here.")
+        best_path, base_cost = got
+    else:
+        best_path, base_cost = passage.best(weights)
     base_fingers = passage.fingers(best_path)
     print(f"{len(passage)} events, {args.hand} hand, span {args.span_cm:g} cm, "
-          f"weights: {args.weights or 'built-in defaults'}")
+          f"weights: {args.weights or 'built-in defaults'}"
+          + (", thumb kept off the black keys" if args.no_thumb_on_black else ""))
     print(f"engine's choice  {' '.join(str(f) for f in base_fingers)}   cost {base_cost:.2f}\n")
 
     if args.force:

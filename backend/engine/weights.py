@@ -61,7 +61,38 @@ PRESETS: Dict[str, Dict[str, float]] = {
         "cross_1_3": 1.2, "cross_1_4": 1.2, "pos_change_count": 1.4,
         "rel_out_thumb": 0.8, "rel_out_other": 0.8, "comf_out": 0.85,
     },
+    "beginner": {
+        # Multipliers alone are not enough here; see PRESET_FLOORS.
+    },
 }
+
+# Absolute lower bounds applied after the multipliers. A multiplier scales
+# whatever training produced, and training on PIG produced the habits of
+# professional pianists, who put the thumb on black keys far more freely
+# than any beginner is taught to. A learner's teacher will say "thumb off
+# the black keys" flatly, and a fingering that contradicts the teacher is
+# worse than useless to the learner. So the beginner preset does not
+# nudge that weight, it sets a floor on it.
+#
+# The value is empirical. On the Alla Turca, fingered by an advanced
+# pianist who never puts the thumb on black, the built-in weights agreed
+# on 41 of 61 notes; nothing changed until thumb_black reached 3.0, and at
+# 6.0 the thumb left every black key and agreement rose to 50 of 61. That
+# is one piece, so treat the number as a starting point and re-measure it
+# when there are more.
+PRESET_FLOORS: Dict[str, Dict[str, float]] = {
+    "beginner": {"thumb_black": 6.0},
+}
+
+
+def _apply_preset(values: Dict[str, float], goal: str | None) -> Dict[str, float]:
+    if not goal:
+        return values
+    for name, factor in PRESETS.get(goal, {}).items():
+        values[name] = values.get(name, 0.0) * factor
+    for name, floor in PRESET_FLOORS.get(goal, {}).items():
+        values[name] = max(values.get(name, 0.0), floor)
+    return values
 
 
 @dataclass
@@ -86,11 +117,7 @@ class Weights:
 
     @classmethod
     def default(cls, goal: str | None = None) -> "Weights":
-        values = dict(DEFAULT_WEIGHTS)
-        if goal:
-            for name, factor in PRESETS.get(goal, {}).items():
-                values[name] = values.get(name, 0.0) * factor
-        return cls.from_dict(values)
+        return cls.from_dict(_apply_preset(dict(DEFAULT_WEIGHTS), goal))
 
     def to_dict(self) -> Dict[str, float]:
         out: Dict[str, float] = {}
@@ -100,12 +127,9 @@ class Weights:
         return out
 
     def with_preset(self, goal: str | None) -> "Weights":
-        if not goal or goal not in PRESETS:
+        if not goal or (goal not in PRESETS and goal not in PRESET_FLOORS):
             return self
-        values = self.to_dict()
-        for name, factor in PRESETS[goal].items():
-            values[name] = values.get(name, 0.0) * factor
-        return Weights.from_dict(values)
+        return Weights.from_dict(_apply_preset(self.to_dict(), goal))
 
     def copy(self) -> "Weights":
         return Weights(self.state.copy(), self.trans.copy(), self.second.copy())

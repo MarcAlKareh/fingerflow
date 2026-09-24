@@ -324,3 +324,38 @@ def test_chromatic_semitone_costs_nothing_extra_for_a_large_hand():
         breakdown = cost_breakdown(data, "right", [3, 2], hand_span_cm=span)
         assert breakdown.get("prac_in", 0.0) == 0.0, f"{span} cm hand called a semitone impossible"
         assert breakdown.get("comf_in", 0.0) == 0.0, f"{span} cm hand called a semitone cramped"
+
+
+def test_beginner_preset_floors_thumb_black_regardless_of_training():
+    """The floor must hold whatever the learned value happened to be."""
+    from engine.weights import PRESET_FLOORS, Weights
+
+    floor = PRESET_FLOORS["beginner"]["thumb_black"]
+    assert Weights.default("beginner").to_dict()["thumb_black"] == floor
+
+    weak = Weights.default().to_dict()
+    weak["thumb_black"] = 0.2  # as if PIG had learned that professionals do not mind
+    assert Weights.from_dict(weak).with_preset("beginner").to_dict()["thumb_black"] == floor
+
+    strong = Weights.default().to_dict()
+    strong["thumb_black"] = 9.0
+    assert Weights.from_dict(strong).with_preset("beginner").to_dict()["thumb_black"] == 9.0
+
+    # Other weights are untouched.
+    a, b = Weights.default().to_dict(), Weights.default("beginner").to_dict()
+    assert {k for k in a if a[k] != b[k]} == {"thumb_black"}
+
+
+def test_beginner_preset_keeps_the_thumb_off_black_keys_in_the_alla_turca_opening():
+    from engine.passage import PassageSpec
+    from engine.weights import Weights
+
+    # Bars 1-2 of the Alla Turca, right hand, as semiquavers at 120.
+    opening = "C#5 D5 C#5 B4 A4 B4 A4 G#4 F#4 A4 G#4 F#4 F4 F#4 G#4 F4 C#4 D#4 F4 C#4 F#4"
+    passage = PassageSpec.from_note_names(opening, hand="right", span_cm=23.0,
+                                          bpm=120, note_value=16).build()
+    black = passage.black_key_events()
+    free = passage.fingers(passage.best(Weights.default())[0])
+    assert any(free[k] == 1 for k in black), "fixture no longer exercises the rule"
+    learner = passage.fingers(passage.best(Weights.default("beginner"))[0])
+    assert all(learner[k] != 1 for k in black)
