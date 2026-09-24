@@ -6,11 +6,8 @@ Pipeline:
 1. Load image
 2. Convert to grayscale
 3. Resize for a consistent working resolution
-4. Boost local contrast
-5. Denoise lightly
-6. Deskew based on foreground pixels
-7. Crop to content
-8. Adaptive threshold to black/white
+4. For clean screenshots: crop, pad, Otsu binarize
+5. For photos: contrast, denoise, deskew grayscale, crop, pad, one adaptive binarize
 """
 
 from __future__ import annotations
@@ -67,35 +64,64 @@ def resize_to_target_width(image: np.ndarray, target_width: int) -> np.ndarray:
     )
 
 
-def deskew_image(image: np.ndarray) -> tuple[np.ndarray, float]:
-    """Straighten a slightly tilted page using the ink pixels' orientation."""
-    # Invert so ink becomes white (easier for angle detection)
+def looks_like_digital_score(gray: np.ndarray) -> bool:
+    """Screenshots and PDF renders are already high-contrast; heavy binarize hurts them."""
+    near_white = float((gray > 245).mean())
+    midtone = float(((gray >= 30) & (gray <= 245)).mean())
+    return near_white > 0.65 and midtone < 0.25
+
+
+def estimate_deskew_angle(image: np.ndarray) -> float:
+    """Estimate tilt from ink pixels. Positive/negative degrees, or 0 if unsure."""
     inverted = cv2.bitwise_not(image)
     points = np.column_stack(np.where(inverted > 0))
-
-    # Not enough ink pixels to estimate a reliable angle
     if len(points) < 200:
-        return image, 0.0
+        return 0.0
 
     angle = cv2.minAreaRect(points)[-1]
     if angle < -45:
         angle = 90 + angle
-
-    # Ignore tiny tilts — rotating them can hurt more than it helps
     if abs(angle) < 0.15:
-        return image, 0.0
+        return 0.0
+    return float(angle)
 
+
+def rotate_image(image: np.ndarray, angle: float) -> np.ndarray:
+    """Rotate a grayscale page, filling new corners with paper-white."""
+    if abs(angle) < 0.15:
+        return image
     height, width = image.shape[:2]
-    center = (width // 2, height // 2)
+    center = (width / 2.0, height / 2.0)
     matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
-    rotated = cv2.warpAffine(
+    return cv2.warpAffine(
         image,
         matrix,
         (width, height),
         flags=cv2.INTER_CUBIC,
-        borderMode=cv2.BORDER_REPLICATE,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=255,
     )
-    return rotated, angle
+
+
+def deskew_image(image: np.ndarray) -> tuple[np.ndarray, float]:
+    """Straighten a slightly tilted page using the ink pixels' orientation."""
+    angle = estimate_deskew_angle(image)
+    return rotate_image(image, angle), angle
+
+
+def pad_border(image: np.ndarray, padding: int, value: int = 255) -> np.ndarray:
+    """Add a uniform white margin so OMR is not tight against the image edge."""
+    if padding <= 0:
+        return image
+    return cv2.copyMakeBorder(
+        image,
+        padding,
+        padding,
+        padding,
+        padding,
+        cv2.BORDER_CONSTANT,
+        value=value,
+    )
 
 
 def crop_to_content(image: np.ndarray, padding: int) -> np.ndarray:
@@ -115,6 +141,12 @@ def crop_to_content(image: np.ndarray, padding: int) -> np.ndarray:
     x_max = min(image.shape[1], x_max + padding + 1)
 
     return image[y_min:y_max, x_min:x_max]
+
+
+def otsu_binarize(image: np.ndarray) -> np.ndarray:
+    """Global black/white split. Safer than adaptive threshold on clean screenshots."""
+    _, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return binary
 
 
 def adaptive_binarize(image: np.ndarray, block_size: int, c_value: int) -> np.ndarray:
@@ -138,7 +170,7 @@ def preprocess_array(
     original: np.ndarray,
     *,
     target_width: int = 2200,
-    crop_padding: int = 24,
+    crop_padding: int = 48,
     threshold_block_size: int = 31,
     threshold_c: int = 12,
 ) -> tuple[np.ndarray, float]:
@@ -148,6 +180,13 @@ def preprocess_array(
     # 2. Normalize size so later steps behave consistently
     resized = resize_to_target_width(gray, target_width)
 
+    # Digital screenshots are already sharp. Adaptive threshold on them
+    # merges beams/noteheads into black blobs, which makes Audiveris drop bars.
+    if looks_like_digital_score(resized):
+        cropped = crop_to_content(resized, crop_padding)
+        padded = pad_border(cropped, max(crop_padding, 48))
+        return otsu_binarize(padded), 0.0
+
     # 3. Boost local contrast so faint staff lines / notes stand out
     clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
     contrast = clahe.apply(resized)
@@ -156,11 +195,15 @@ def preprocess_array(
     denoised = cv2.fastNlMeansDenoising(
         contrast, None, h=9, templateWindowSize=7, searchWindowSize=21
     )
-    # 5. Rough binary for deskew, then straighten, crop, and finalize
+    # Estimate tilt from a rough binary, then rotate the grayscale (not the
+    # binary). Binarize once at the end — a second adaptive pass on black/white
+    # pixels creates blobs that wipe out dense 16th-note runs.
     provisional_binary = adaptive_binarize(denoised, threshold_block_size, threshold_c)
-    deskewed, angle = deskew_image(provisional_binary)
+    angle = estimate_deskew_angle(provisional_binary)
+    deskewed = rotate_image(denoised, angle)
     cropped = crop_to_content(deskewed, crop_padding)
-    final = adaptive_binarize(cropped, threshold_block_size, threshold_c)
+    padded = pad_border(cropped, max(24, crop_padding // 2))
+    final = adaptive_binarize(padded, threshold_block_size, threshold_c)
     return final, angle
 
 
@@ -168,7 +211,7 @@ def preprocess_bytes(
     data: bytes,
     *,
     target_width: int = 2200,
-    crop_padding: int = 24,
+    crop_padding: int = 48,
     threshold_block_size: int = 31,
     threshold_c: int = 12,
 ) -> tuple[bytes, float]:
@@ -196,32 +239,19 @@ def preprocess_score(
 ) -> None:
     """CLI helper: read a file, preprocess it, write the result (optional debug dumps)."""
     original = read_image(input_path)
-    gray = cv2.cvtColor(original, cv2.COLOR_BGR2GRAY)
-    resized = resize_to_target_width(gray, target_width)
-
-    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-    contrast = clahe.apply(resized)
-
-    denoised = cv2.fastNlMeansDenoising(
-        contrast, None, h=9, templateWindowSize=7, searchWindowSize=21
+    final, angle = preprocess_array(
+        original,
+        target_width=target_width,
+        crop_padding=crop_padding,
+        threshold_block_size=threshold_block_size,
+        threshold_c=threshold_c,
     )
-    provisional_binary = adaptive_binarize(denoised, threshold_block_size, threshold_c)
-    deskewed, angle = deskew_image(provisional_binary)
-    cropped = crop_to_content(deskewed, crop_padding)
-    final = adaptive_binarize(cropped, threshold_block_size, threshold_c)
-
     write_image(output_path, final)
 
-    # Optional: save each intermediate step so you can tune the pipeline
     if debug_dir is not None:
         debug_dir.mkdir(parents=True, exist_ok=True)
+        gray = cv2.cvtColor(original, cv2.COLOR_BGR2GRAY)
         write_image(debug_dir / "01-gray.png", gray)
-        write_image(debug_dir / "02-resized.png", resized)
-        write_image(debug_dir / "03-contrast.png", contrast)
-        write_image(debug_dir / "04-denoised.png", denoised)
-        write_image(debug_dir / "05-binary-before-deskew.png", provisional_binary)
-        write_image(debug_dir / "06-deskewed.png", deskewed)
-        write_image(debug_dir / "07-cropped.png", cropped)
         write_image(debug_dir / "08-final.png", final)
         (debug_dir / "meta.txt").write_text(
             "\n".join(
@@ -233,6 +263,7 @@ def preprocess_score(
                     f"threshold_block_size={threshold_block_size}",
                     f"threshold_c={threshold_c}",
                     f"deskew_angle_deg={angle:.4f}",
+                    f"digital_score={looks_like_digital_score(gray)}",
                 ]
             ),
             encoding="utf-8",
@@ -255,8 +286,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--crop-padding",
         type=int,
-        default=24,
-        help="Extra padding in pixels around detected content (default: 24)",
+        default=48,
+        help="Extra padding in pixels around detected content (default: 48)",
     )
     parser.add_argument(
         "--threshold-block-size",

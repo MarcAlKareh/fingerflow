@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from backend.omr import AudiverisError, recognize_score, validate_musicxml  # noqa: E402
+from backend.omr import AudiverisError, recognize_with_recovery, validate_musicxml  # noqa: E402
 from scripts.preprocess_score import preprocess_score  # noqa: E402
 
 
@@ -42,14 +42,14 @@ def run_pipeline(
         input_image,
         preprocessed_path,
         target_width=2200,
-        crop_padding=24,
+        crop_padding=48,
         threshold_block_size=31,
         threshold_c=12,
         debug_dir=None,
     )
 
     print("[2/3] Running Audiveris (this may take a few minutes)")
-    result = recognize_score(
+    result = recognize_with_recovery(
         preprocessed_path,
         audiveris_output,
         audiveris_command=audiveris_command,
