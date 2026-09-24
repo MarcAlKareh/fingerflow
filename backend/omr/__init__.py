@@ -9,6 +9,7 @@ from .audiveris import (
     recognize_score,
     validate_musicxml,
 )
+from .recover import recognize_with_recovery
 
 __all__ = [
     "AudiverisError",
@@ -17,5 +18,6 @@ __all__ = [
     "AudiverisResult",
     "InvalidMusicXMLError",
     "recognize_score",
+    "recognize_with_recovery",
     "validate_musicxml",
 ]

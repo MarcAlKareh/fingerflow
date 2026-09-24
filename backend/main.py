@@ -5,15 +5,17 @@ import os
 import sys
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from engine import Weights, assign_fingering
-from omr.audiveris import recognize_score
+from omr.annotate import write_fingered_musicxml
+from omr.heads import find_book_omr, parse_omr_heads
 from omr.parser import parse_musicxml
+from omr.recover import recognize_with_recovery
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -70,6 +72,32 @@ def _parse_tempo(value: str) -> Optional[float]:
     return bpm if 10.0 <= bpm <= 400.0 else None
 
 
+def _meta_path(job_id: str) -> Path:
+    return UPLOADS / job_id / "meta.json"
+
+
+def read_meta(job_id: str) -> dict[str, Any]:
+    path = _meta_path(job_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_meta(job_id: str, meta: dict[str, Any]) -> None:
+    path = _meta_path(job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def update_meta(job_id: str, **fields: Any) -> dict[str, Any]:
+    meta = read_meta(job_id)
+    meta.update(fields)
+    write_meta(job_id, meta)
+    return meta
+
+
 def finger_hand(music_data: dict, hand: str, span_cm: float, goal: Optional[str]) -> None:
     key = f"{hand}_hand"
     notes = music_data.get(key) or []
@@ -95,13 +123,87 @@ def finger_hand(music_data: dict, hand: str, span_cm: float, goal: Optional[str]
     }
 
 
+def run_recognition_pipeline(job_id: str) -> None:
+    """OMR + fingering. Runs after the upload response is sent."""
+    meta = read_meta(job_id)
+    job_dir = UPLOADS / job_id
+    processed_path = job_dir / "processed.png"
+    audiveris_dir = job_dir / "audiveris"
+    span_left = float(meta["hand_span_left_cm"])
+    span_right = float(meta["hand_span_right_cm"])
+    goal_choice = meta.get("goal") or "expression"
+    tempo_override = meta.get("tempo_bpm")
+
+    try:
+        update_meta(job_id, status="processing", stage="omr", pipeline_error=None)
+        omr_result = recognize_with_recovery(processed_path, audiveris_dir)
+
+        update_meta(job_id, stage="parse")
+        book_omr = find_book_omr(audiveris_dir)
+        music_data = (
+            parse_omr_heads(book_omr, processed_path, tempo_bpm=tempo_override)
+            if book_omr
+            else None
+        )
+        if music_data is None:
+            music_data = parse_musicxml(omr_result.musicxml_path, tempo_bpm=tempo_override)
+        music_data["settings"] = {
+            "hand_span_left_cm": span_left,
+            "hand_span_right_cm": span_right,
+            "goal": goal_choice,
+            "tempo_override_bpm": tempo_override,
+        }
+
+        update_meta(job_id, stage="fingering")
+        finger_hand(music_data, "right", span_right, goal_choice)
+        finger_hand(music_data, "left", span_left, goal_choice)
+
+        notes_path = job_dir / "notes.json"
+        notes_path.write_text(json.dumps(music_data, indent=2), encoding="utf-8")
+
+        musicxml_url = None
+        try:
+            fingered_path = job_dir / "fingered.musicxml"
+            write_fingered_musicxml(omr_result.musicxml_path, music_data, fingered_path)
+            musicxml_url = f"/api/uploads/{job_id}/fingered.musicxml"
+        except Exception as exc:  # noqa: BLE001
+            print(f"Fingered MusicXML export failed for job {job_id}: {exc}")
+
+        update_meta(
+            job_id,
+            status="complete",
+            stage="complete",
+            notes_url=f"/api/uploads/{job_id}/notes.json",
+            musicxml_url=musicxml_url,
+            pipeline_error=None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"OMR or fingering failed for job {job_id}: {exc}")
+        update_meta(
+            job_id,
+            status="error",
+            stage="error",
+            notes_url=None,
+            musicxml_url=None,
+            pipeline_error=str(exc),
+        )
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "weights": "learned" if LEARNED_WEIGHTS else "default"}
 
 
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str) -> dict[str, Any]:
+    if not job_id.isalnum() or len(job_id) > 64:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return read_meta(job_id)
+
+
 @app.post("/api/preprocess")
 async def preprocess(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     piece_name: str = Form(""),
     hand_span: str = Form(""),
@@ -149,37 +251,14 @@ async def preprocess(
 
     original_path = job_dir / f"original{original_suffix}"
     processed_path = job_dir / "processed.png"
-    meta_path = job_dir / "meta.json"
 
     original_path.write_bytes(data)
     processed_path.write_bytes(processed_bytes)
 
-    # --- OMR + fingering pipeline ---
-    notes_url = None
-    pipeline_error = None
-    audiveris_dir = job_dir / "audiveris"
-
-    try:
-        omr_result = recognize_score(processed_path, audiveris_dir)
-        music_data = parse_musicxml(omr_result.musicxml_path, tempo_bpm=tempo_override)
-        music_data["settings"] = {
-            "hand_span_left_cm": span_left,
-            "hand_span_right_cm": span_right,
-            "goal": goal_choice,
-            "tempo_override_bpm": tempo_override,
-        }
-        finger_hand(music_data, "right", span_right, goal_choice)
-        finger_hand(music_data, "left", span_left, goal_choice)
-
-        notes_path = job_dir / "notes.json"
-        notes_path.write_text(json.dumps(music_data, indent=2), encoding="utf-8")
-        notes_url = f"/api/uploads/{job_id}/notes.json"
-    except Exception as exc:  # noqa: BLE001
-        pipeline_error = str(exc)
-        print(f"OMR or fingering failed for job {job_id}: {exc}")
-
     meta = {
         "job_id": job_id,
+        "status": "processing",
+        "stage": "omr",
         "original_filename": file.filename,
         "piece_name": piece_name.strip(),
         "hand_span_left_cm": span_left,
@@ -189,9 +268,10 @@ async def preprocess(
         "deskew_angle_deg": round(deskew_angle, 4),
         "original_url": f"/api/uploads/{job_id}/original{original_suffix}",
         "processed_url": f"/api/uploads/{job_id}/processed.png",
-        "notes_url": notes_url,
-        "pipeline_error": pipeline_error,
+        "notes_url": None,
+        "musicxml_url": None,
+        "pipeline_error": None,
     }
-    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-
+    write_meta(job_id, meta)
+    background_tasks.add_task(run_recognition_pipeline, job_id)
     return meta

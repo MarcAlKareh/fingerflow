@@ -44,6 +44,7 @@ class AudiverisResult:
     additional_musicxml_paths: tuple[Path, ...]
     stdout: str
     stderr: str
+    log_text: str = ""
 
 
 def resolve_audiveris_command(command: str | Path | None = None) -> Path:
@@ -150,12 +151,27 @@ def validate_musicxml(path: Path) -> None:
         )
 
 
+def _read_logs(output_dir: Path) -> str:
+    """Join Audiveris log files so callers can detect dropped measures."""
+    chunks: list[str] = []
+    for path in sorted(output_dir.rglob("*.log")):
+        try:
+            chunks.append(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+    return "\n".join(chunks)
+
+
 def _find_exports(output_dir: Path) -> list[Path]:
     """Find MusicXML exports, including Audiveris movement subfolders."""
+    skip_dirs = {"measure_omr", "measure_crops", "no_wedges"}
+    destination = output_dir.resolve()
     candidates = [
         path
-        for path in output_dir.rglob("*")
-        if path.is_file() and path.suffix.lower() in {".xml", ".musicxml", ".mxl"}
+        for path in destination.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() in {".xml", ".musicxml", ".mxl"}
+        and not any(part in skip_dirs for part in path.relative_to(destination).parts[:-1])
     ]
 
     valid: list[Path] = []
@@ -246,4 +262,5 @@ def recognize_score(
         additional_musicxml_paths=tuple(exports[1:]),
         stdout=completed.stdout,
         stderr=completed.stderr,
+        log_text=_read_logs(destination),
     )
